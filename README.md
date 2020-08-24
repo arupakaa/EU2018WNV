@@ -1,5 +1,5 @@
 # EU2018WNV
-2018 West Nile Virus Determinants Maps - Europe
+AI-Derived West Nile Virus Determinants Maps - 2018 Europe
 
 <img src="./image.png">
 
