@@ -1,0 +1,229 @@
+# Script to be executed in R
+
+############# NOTES ############################################
+# Function takes data table with no restrictions.
+# One-hot applied automatically, where applicable.
+# XGBoost exected in 2, optionally 3 rounds for cross-validation.
+# First round used for feature selection, with results discarded.
+# SHAP meta-model then generated from XGBoost model and data.
+# Evaluation metrics generated for training and validation data, for all models.
+# Models, data, and evaluation results saved and output as list.
+
+##################### EXEC #############################
+# xgb model
+function_XGBSHP <- function(input_data,
+                            eta = .03, max_depth = 16, 
+                            CV = T){
+  
+  ## prep inital data
+  `DATA-PREP` <- input_data %>%
+    data.table::as.data.table() %>%
+    .[, "Case_TY_Count" := NULL] %>% ## drop surplus labels
+    .[, c("geo", "Year") := .(as.factor(geo), as.factor(Year))] %>%
+    mltools::one_hot(sparsifyNAs = F) %>%
+    cbind("Year" = input_data$Year)
+    
+  
+  ## generate training data
+  # prep data
+  `DATA-TRAIN` <- `DATA-PREP` %>%
+    data.table::as.data.table() %>%
+    .[Year != "2017" & Year != "2018"] %>%
+    .[, "Year" := NULL] %>% ## drop surplus labels
+    mltools::one_hot(sparsifyNAs = F) 
+  #{dummyVars(" ~ .", sep = "_", data = .) -> dmy ; predict(dmy, newdata = .)}
+  
+  # x
+  data_x_train <- as.matrix(`DATA-TRAIN`[, lapply(.SD, as.numeric), .SDcols = !"Case_TY_Bin"])
+  # y label
+  label_y_train <- as.matrix(`DATA-TRAIN`[, lapply(.SD, as.numeric), .SDcols = "Case_TY_Bin"])
+  
+  ## generate 2018 data
+  # prep data
+  `DATA-2018` <- `DATA-PREP` %>%
+    data.table::as.data.table() %>%
+    .[Year == "2018"] %>%
+    .[, "Year" := NULL] %>% ## drop surplus labels
+    mltools::one_hot(sparsifyNAs = F) 
+  
+  # split 2018 data
+  # x
+  data_x_2018 <- as.matrix(`DATA-2018`[, lapply(.SD, as.numeric), .SDcols = !"Case_TY_Bin"])
+  # y label
+  label_y_2018 <- as.matrix(`DATA-2018`[, lapply(.SD, as.numeric), .SDcols = "Case_TY_Bin"])
+  
+  
+  
+  ##init nrounds
+  nrounds <- 10000
+  
+  ## params
+  XGB_model_1_params <- list(objective = "binary:logistic",  ## logistic BDT
+                             max_bin = 512, ## max granularity ofbinning operation--set to 2x default
+                             eta = eta, ## default = .3, information % (weight); lower value ensures systematic search
+                             base_score = .95, ## set positie threshhold to standard for hypothesis testing 
+                             max_depth = max_depth, ## doubles default value 6, maximum assumed complexity for individual model
+                             subsample = 1, ## allows for randomized experimentation that includes/excludes regional effects 
+                             colsample_bytree = .5, ## allows for randomized experimentation wrt feature & interaction effects 
+                             num_parallel_tree = 6, ## number of trees to generae & run in parallel
+                             predictor = "cpu_predictor", ## force CPU implementation
+                             booster = "gbtree", ## standard tree algo--most reliable for subsequent processes
+                             eval_metric = "aucpr", ## optimizes precision-recall tradeoff
+                             eval_metric = "auc", ## optimizes sensitivty-specifity tradeoff
+                             eval_metric = "ndcg", ## optimizes for gain order ranking
+                             eval_metric = "map", ## optimizes mean absolute precision
+                             eval_metric = "error@.95", ## optimizes error rate at .95 predictive threshold
+                             eval_metric = "logloss", ## optimizes neg log of loss value
+                             silent = "1")
+  
+    
+  ## run CV, if indicated
+  if (CV) { 
+    
+    ## generate CV folds
+    # generate folds index for cv
+    # folds based on years, parallel with research aim (ensures annual cycles preserved)
+    `CV-FOLDS` <- input_data %>%
+      data.table::as.data.table() %>%
+      .[Year != "2017" & Year != "2018"] %>%
+      .[, .(Year = as.factor(Year), YearIdx = .I)] ## generates ordered list of years and indices,
+    
+    ## create index list for each year
+    lapply(unique(`CV-FOLDS`$Year), function(x) {  
+      `CV-FOLDS`%>%
+        .[Year==x,] %>%
+        .[, YearIdx] %>%
+        as.vector()
+      
+    }) -> `CV-FOLDS` ## folds definitions
+    
+    
+    # execute CV  
+    XGB_model_1_CV <- xgboost::xgb.cv(data = data_x_train,
+                                      label = label_y_train, 
+                                      params = XGB_model_1_params,
+                                      nrounds = nrounds,
+                                      early_stopping_rounds = 10,
+                                      folds = `CV-FOLDS`, ## folds definitions
+                                      prediction = T)  
+    
+    nrounds = XGB_model_1_CV$best_iteration * 2 ## adjust nrounds according to CV results
+    
+    return(XGB_model_1_CV)
+    
+  }
+  
+  ## execute model
+  # nrounds set to 2x CV result
+  XGB_model_1 <- xgboost::xgboost(data = data_x_train,
+                                  label = label_y_train,  
+                                  params = XGB_model_1_params, 
+                                  nrounds = nrounds, ## nrounds either default or adjusted to CV results
+                                  early_stopping_rounds = 10)
+  
+  ## feature list
+  # get relevant features, per XGB model
+  XGB_OG_FeaturesList <- xgboost::xgb.importance(model = XGB_model_1) %>% .[, "Feature"] %>% unlist()
+  
+  
+  ################################################
+  ############## relevant data set & model ###############
+  
+  # relevant training
+  data_x_train_rel <- data_x_train %>%
+    as.data.table() %>%
+    .[, .SD, .SDcols = XGB_OG_FeaturesList] %>%
+    as.matrix()
+  
+  # relevant 2018
+  data_x_2018_rel <- data_x_2018 %>%
+    as.data.table() %>%
+    .[, .SD, .SDcols = XGB_OG_FeaturesList] %>%
+    as.matrix()
+  
+  # create final, stage-2 XGB model
+  XGB_model_1 <- xgboost::xgboost(data = data_x_train_rel,
+                                  label = label_y_train,  
+                                  params = XGB_model_1_params, 
+                                  nrounds = nrounds, ## nrounds either default or adjusted to CV results
+                                  early_stopping_rounds = 10)
+  
+  
+  
+  ################### run evaluation for XGB/SHAP (2018) #####################
+  #########SHAP ############################
+  
+  ## SHAP generation
+  # generate SHP values
+  SHP_model_1_train <- shap.values(xgb_model = XGB_model_1, X_train = data_x_train_rel)
+  SHP_model_1_2018 <- shap.values(xgb_model = XGB_model_1, X_train = data_x_2018_rel)
+  
+  ## calculate predictions (.50, .1, SHAP)
+  # XGB initialize 
+  XGB_model_1_Predict_Train <- xgboost:::predict.xgb.Booster(XGB_model_1, data_x_train_rel)
+  XGB_model_1_Predict_2018 <- xgboost:::predict.xgb.Booster(XGB_model_1, data_x_2018_rel)
+  
+  ## calculate goodness of fit metrics (.50, .1, SHAP)
+  # Train XGB .5
+  XGB_model_1_Predict_Train_t50 <- ifelse(XGB_model_1_Predict_Train <= 0.5, 0, 1) %>% factor(levels=c("0", "1"), labels = c("Absent", "Present"))
+  XGB_model_1_Predict_Train_Eval_t50 <- caret::confusionMatrix(XGB_model_1_Predict_Train_t50, label_y_train %>%
+                                                                factor(labels = c("Absent", "Present")), positive = "Present")
+  # Train XGB .1
+  XGB_model_1_Predict_Train_t10 <- ifelse(XGB_model_1_Predict_Train <= 0.1, 0, 1) %>% factor(levels=c("0", "1"), labels = c("Absent", "Present"))
+  XGB_model_1_Predict_Train_Eval_t10 <- caret::confusionMatrix(XGB_model_1_Predict_Train_t10, label_y_train %>%
+                                                                factor(labels = c("Absent", "Present")), positive = "Present")
+  
+  # 2018 XGB .5
+  XGB_model_1_Predict_2018_t50 <- ifelse(XGB_model_1_Predict_2018 <= 0.5, 0, 1) %>% factor(levels=c("0", "1"), labels = c("Absent", "Present"))
+  XGB_model_1_Predict_2018_Eval_t50 <- caret::confusionMatrix(XGBSHP_Output_Full_ctrl$predictions$XGB_model_1_Predict_2018_t50, label_y_2018 %>%
+                                                                factor(labels = c("Absent", "Present")), positive = "Present")
+  # 2018 XGB .1
+  XGB_model_1_Predict_2018_t10 <- ifelse(XGB_model_1_Predict_2018 <= 0.1, 0, 1) %>% factor(levels=c("0", "1"), labels = c("Absent", "Present"))
+  XGB_model_1_Predict_2018_Eval_t10 <- caret::confusionMatrix(XGB_model_1_Predict_2018_t10, label_y_2018 %>%
+                                                                factor(labels = c("Absent", "Present")), positive = "Present")
+  
+  # SHAP - Train 
+  # generate risk prediction
+  XGB_model_1_Predict_Train_SHAP <- rowSums(SHP_model_1_train$shap_score) ## generate prediction
+  XGB_model_1_Predict_Train_SHAP_BIN <- ifelse(XGB_model_1_Predict_Train_SHAP < 0, "Absent", "Present") %>% factor()
+  # evaluate
+  XGB_model_1_Predict_Train_Eval_SHAP <- caret::confusionMatrix(XGB_model_1_Predict_Train_SHAP_BIN, label_y_train %>%
+                                                                  factor(labels = c("Absent", "Present")), positive = "Present")
+  
+  # SHAP - 2018 
+  # generate risk prediction
+  XGB_model_1_Predict_2018_SHAP <- rowSums(SHP_model_1_2018$shap_score) ## generate prediction
+  XGB_model_1_Predict_2018_SHAP_BIN <- ifelse(XGB_model_1_Predict_2018_SHAP < 0, "Absent", "Present") %>% factor()
+  # evaluate
+  XGB_model_1_Predict_2018_Eval_SHAP <- caret::confusionMatrix(XGB_model_1_Predict_2018_SHAP_BIN, label_y_2018 %>%
+                                                                 factor(labels = c("Absent", "Present")), positive = "Present")
+  
+  
+  ## set return conditions,
+  return(list("data"=list("data_x_train"=data_x_train,
+                          "data_x_train_rel"=data_x_train_rel,
+                          "label_y_train"=label_y_train,
+                          "data_x_2018"=data_x_2018,
+                          "data_x_2018_rel"=data_x_2018_rel,
+                          "label_y_2018"=label_y_2018),
+              
+              "model"=list("XGB_OG_FeaturesList"=XGB_OG_FeaturesList,
+                           "XGB_model_1_CV"=XGB_model_1_CV,
+                           "XGB_model_1"=XGB_model_1, 
+                           "SHP_model_1_train"=SHP_model_1_train,
+                           "SHP_model_1_2018"=SHP_model_1_2018),
+              
+              "predictions"=list("XGB_model_1_Predict_Train_t50"=XGB_model_1_Predict_Train_t50,
+                                 "XGB_model_1_Predict_Train_t10"=XGB_model_1_Predict_Train_t10,
+                                 "XGB_model_1_Predict_2018_t50"=XGB_model_1_Predict_2018_t50,
+                                 "XGB_model_1_Predict_2018_t10"=XGB_model_1_Predict_2018_t10,
+                                 "XGB_model_1_Predict_Train_SHAP"=XGB_model_1_Predict_Train_SHAP,
+                                 "XGB_model_1_Predict_2018_SHAP"=XGB_model_1_Predict_2018_SHAP),
+              
+              "evaluations"=list("XGB_model_1_Predict_Train_Eval_t50"=XGB_model_1_Predict_Train_Eval_t50,
+                                 "XGB_model_1_Predict_Train_Eval_t10"=XGB_model_1_Predict_Train_Eval_t10,
+                                 "XGB_model_1_Predict_2018_Eval_t50"=XGB_model_1_Predict_2018_Eval_t50, 
+                                 "XGB_model_1_Predict_2018_Eval_t10"=XGB_model_1_Predict_2018_Eval_t10, 
+                                 "XGB_model_1_Predict_Train_Eval_SHAP"=XGB_model_1_Predict_Train_Eval_SHAP,
+                                 "XGB_model_1_Predict_2018_Eval_SHAP"=XGB_model_1_Predict_2018_Eval_SHAP)))
+}
