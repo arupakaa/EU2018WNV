@@ -1,0 +1,121 @@
+# Script to be executed in R
+
+############# NOTES ############################################
+# Function takes data table returned by SHAP generation script
+# returns long form data.table with feature class lables
+
+##################### EXEC #############################
+
+processFeatureClassTable <- function(`2018_datatable`){
+  
+  
+  # change according to sample requirements
+  cbind(WNF_EU_EEA_COUNTS2[Year==2018, 1:2], `2018_datatable`) %>%
+    melt(id=1:2, variable.name = "Name") %>% 
+    .[Name %like% "X", "Class" := "Environmental"] %>% ## incasea
+    ## climate
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("NDVI", "NDVI_z", "EVI", "EVI_z"))), 
+      "Class" := "Climate"] %>%
+    .[Name %like% "Q", "Class" := "Climate"] %>%
+    .[Name %like% "recipi", "Class" := "Climate"] %>%
+    .[Name %like% "nomaly", "Class" := "Climate"] %>%
+    .[Name %like% "centile", "Class" := "Climate"] %>%
+    .[Name %like% "emp", "Class" := "Climate"] %>%
+    .[Name %like% "ersist", "Class" := "Climate"] %>%
+    .[Name %like% "ressure", "Class" := "Climate"] %>%
+    .[Name %like% "deficit", "Class" := "Climate"] %>%
+    .[Name %like% "speed", "Class" := "Climate"] %>% 
+    .[Name %like% "at_10m", "Class" := "Climate"] %>% 
+    .[Name %like% "ccumulat", "Class" := "Climate"] %>%
+    .[Name %like% "unoff", "Class" := "Climate"] %>%
+    .[Name %like% "unoff", "Class" := "Climate"] %>%
+    .[Name %like% "moisture", "Class" := "Climate"] %>% 
+    .[Name %like% "radiation", "Class" := "Climate"] %>%
+    .[Name %like% "vapotrans", "Class" := "Climate"] %>% 
+    .[Name %like% "ctual", "Class" := "Climate"] %>% 
+    .[Name %like% "eference", "Class" := "Climate"] %>% 
+    .[Name %like% "Isothermality", "Class" := "Climate"] %>% 
+    .[Name %like% "rought", "Class" := "Climate"] %>% 
+    .[Name %like% "almer", "Class" := "Climate"] %>% 
+    .[Name %like% "mate_water", "Class" := "Climate"] %>% 
+    .[Name %like% "seasonality", "Class" := "Climate"] %>% 
+    ## environment
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("change_norm",
+                                              "transition_No change",	
+                                              #"seasonality",
+                                              "transition_Permanent",	
+                                              "transition_Seasonal",	
+                                              "max_extent",	
+                                              "recurrence",
+                                              "occurrence",
+                                              "transition_Ephemeral permanent"))), 
+      "Class" := "Environmental"] %>%
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("Pannonic_loess_steppic_grasslands",
+                                              "Pannonian_Balkanic_turkey_oak_a_sessile_oak_forests",
+                                              "Sub_Mediterranean_pine_forests_with_endemic_black_pines",
+                                              "Galio_Carpinetum_oak_hornbeam_forests",
+                                              "Coastal_dunes_with_Juniperus_spp",
+                                              "Mediterranean_and_thermo_Atlantic_halophilous_scrubs_Sarcocornetea_fruticosi",
+                                              "Natural_eutrophic_lakes_with_Magnopotamion_or_Hydrocharition_type_vegetation",
+                                              "Rivers_with_muddy_banks_with_Chenopodion_rubri_p_p_and_Bidention_p_p_vegetation",
+                                              "Mudflats_and_sandflats_not_covered_by_seawater_at_low_tide",
+                                              "Asperulo_Fagetum_beech_forests",
+                                              "Intermittently_flowing_Mediterranean_rivers_of_the_Paspalo_Agrostidion",
+                                              "Medio_European_limestone_beech_forests_of_the_Cephalanthero_Fagion",
+                                              "Fixed_coastal_dunes_with_herbaceous_vegetation_grey_dunes",
+                                              "Large_shallow_inlets_and_bays"))), 
+      "Class" := "Environmental"] %>%
+    .[Name %like% "editerr", "Class" := "Environmental"] %>%
+    ## economic
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("PPS_HAB_EU27_2019",
+                                              "MIO_PPS_EU",
+                                              "PPS_EU27_2019_HAB",
+                                              "EUR_HAB_EU",
+                                              "PPS_HAB_EU",	
+                                              "PPS_EU2",	
+                                              "EUR_HAB_EU27_2019",	
+                                              "PPS_EU27_2",	
+                                              "EUR_HAB",
+                                              "MIO_PPS",
+                                              "PPS_HAB",
+                                              "MIO_PPS_EU27_2019",
+                                              "l_TOTAL",
+                                              "unl_TOTAL",
+                                              "MIO_EUR",
+                                              "MIO_NAC"))), 
+      "Class" := "Economic"] %>%  
+    ## Sociodemographic
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("M_", "F_", "T_", "_Y"))), 
+      "Class" := "Sociodemographic"] %>%  
+    .[Reduce(`|`, Map(`%like%`, list(Name), c("CNMIGRAT", 
+                                              "GROW", 
+                                              "NATGROWRT", 
+                                              "NATGROW",
+                                              "GROWRT",
+                                              "PDENS",
+                                              "GBIRTHRT",
+                                              "CNMIGRATRT",
+                                              "GDEATHRT",
+                                              "DEATH",
+                                              "JAN",  ### curiously large effect 
+                                              "LBIRTH"))), 
+      "Class" := "Sociodemographic"] %>%  
+    ## hosts
+    .[Name %like% "Birds_" 
+      | Name %like% "Mammals_" | Name %like% "Reptiles_" 
+      | Name %like% "Amphibians_", "Class" := "Hosts"] %>% ## hosts
+    ## vectors
+    .[Name %like% "dist_" | Name %like% "pres_" , "Class" := "Vectors"] %>% ## vectors
+    ## spatiotemporal
+    .[Name %like% "geo_", "Class" := "Spatial"] %>%
+    .[Name %like% "Year_", "Class" := "Temporal"] %>%
+    ## autocorr 
+    .[Name %like% "Cases_LY_Bin" |
+        Name %like% "nninfect_cnt" |
+        Name %like% "nninfect_prc" |
+        Name %like% "nninfect_bin"
+        , "Class" := "Temporal"] %>%
+    #.[] -> FeatureClassTable_POSTRAIN
+    .[] %>% return()
+  
+}
