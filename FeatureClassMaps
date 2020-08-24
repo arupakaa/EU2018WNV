@@ -1,0 +1,23 @@
+# Script for generating maps
+
+
+########## MAPS #######################################
+  Fin_Data_Collapsed %>% 
+    cbind("geo" = WNF_EU_EEA_COUNTS2[Year==2018, geo]) %>%  ## ads geo tags
+    .[as.data.table(get_eurostat_geospatial(nuts_level = 3)), on=.(geo)] %>%  ## adds polygons
+    st_as_sf() %>%
+    tm_shape(.,
+             bbox = sf::st_bbox(
+               c(xmin = -13.97461,
+                 ymax = 72, 
+                 xmax = 35, 
+                 ymin = 35.24562), 
+               crs = st_crs(4326))) + 
+    tm_polygons(c("Climate", "Environmental", "Sociodemographic",# "OutbreakRisk2018",
+                  "Economic", "Vectors", "Hosts"#, "CaseCounts2018"
+                  ), ### varies based on along status
+
+                palette = "viridis") + ## replace as appropriat with 
+    tm_legend(legend.position = c("left", "top")) + 
+    tm_layout() + 
+    tm_facets(ncol =3, free.coords = F)
