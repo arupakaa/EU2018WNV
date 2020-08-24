@@ -1,0 +1,67 @@
+# To be executed in R
+
+######## NOTES ####################################
+#
+# Allows for feature class aggregation further down.
+# Requires `FeatureClassLabel` script.
+# Script serves for both aggregation and diagnostic modeling.
+#
+#
+
+############## EXECUTE ############################
+
+############### 1. Creates Feature Class Labels & Diagnostic Models ######################
+
+## generate basic feature calss data table
+SHAP_2018_labeled <- processFeatureClassTable(SHAP_2018) %>% 
+  .[!is.na(Class)]
+
+## set lapply to generatue feature class data sets and run diagnostic models
+ModelsByFeatureClass <- lapply(1:length(unique(SHAP_2018_labeled$Class)), function(ii){
+  
+  ## btary
+  Class_Data2018 <- 
+    SHAP_2018_labeled[Class == unique(SHAP_2018_labeled$Class)[[ii]], ] %>%
+      dcast(geo+Year ~ Name, value.var = "value") %>%
+    .[, `:=`(geo = NULL, Year = NULL) ]
+    
+  
+
+  ## get top features 
+  SHAP_TopClassFeatures <-
+    if (length(names(Class_Data2018)) < 20){
+      names(Class_Data2018)
+    } else {names(Class_Data2018)[1:sqrt(length(names(Class_Data2018)))]}
+  
+  ## bind in 
+  Class_Data2018 <- cbind("CaseCounts2018" = CaseCounts2018, 
+                      "OutbreakRisk2018" = OutbreakRisk2018, 
+                      Class_Data2018)
+   
+  ## do lm
+  Model3_Cto1 <- lm(paste("CaseCounts2018 ~", paste(SHAP_TopClassFeatures, collapse = " + ")),
+                  data = Class_Data2018)
+  
+  ## return
+  return(list("class" = unique(SHAP_2018_labeled$Class)[[ii]],
+              "call" = paste("CaseCounts2018 ~", paste(SHAP_TopClassFeatures, collapse = " + ")), 
+              "summary" = summary(Model3_Cto1), 
+              "data" = Class_Data2018))
+  
+})
+
+############### 2. Aggregates According to Feature Class Label ######################
+
+## collapsed data table
+Fin_Data_Collapsed <- data.table(
+                                 Climate = rowSums(ModelsByFeatureClass[[1]]$data[,-(1:2)]),
+                                 Economic = rowSums(ModelsByFeatureClass[[3]]$data[,-(1:2)]),
+                                 Environmental = rowSums(ModelsByFeatureClass[[4]]$data[,-(1:2)]), 
+                                 Sociodemographic = rowSums(ModelsByFeatureClass[[6]]$data[,-(1:2)]),
+                                 Vectors = rowSums(ModelsByFeatureClass[[7]]$data[,-(1:2)]),
+                                 Hosts = rowSums(ModelsByFeatureClass[[8]]$data[,-(1:2)]),
+                                 ##
+                                 Temporal = rowSums(ModelsByFeatureClass[[2]]$data[,-(1:2)]),
+                                 Spatial = rowSums(ModelsByFeatureClass[[5]]$data[,-(1:2)])
+                                 )
+
